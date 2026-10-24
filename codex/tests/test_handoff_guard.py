@@ -42,12 +42,17 @@ class World(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.use(100_000)
 
-    def use(self, tokens, window=533_000, session=SID, source="vscode", turns=0):
-        rows = [{"type": "session_meta", "payload": {"id": session, "source": source}}]
-        rows += [{"type": "event_msg", "payload": {"type": "user_message", "message": "hi"}}] * turns
-        rows += [
+    def use(self, tokens, window=533_000, session=SID, source="vscode", turns=0, legacy=False, meta=None, after=()):
+        """A rollout as Codex 0.163 writes it; legacy=True counts turns the older way."""
+        rows = [{"type": "session_meta", "payload": dict({"id": session, "source": source}, **(meta or {}))}]
+        turn = ({"type": "event_msg", "payload": {"type": "user_message", "message": "hi"}} if legacy else
+                {"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "UserMessage"}}})
+        rows += [turn] * turns
+        if tokens is not None:
+            rows += [
                 {"type": "event_msg", "payload": {"type": "token_count", "info": {
                     "last_token_usage": {"total_tokens": tokens}, "model_context_window": window}}}]
+        rows += list(after)
         self.rollout.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
 
     def fire(self, name, **extra):
@@ -111,6 +116,50 @@ class Tiers(World):
         self.assertEqual(self.notes("PostToolUse"), [])
         self.use(405_000, turns=7)
         self.assertIn("是否需要交接", self.notes()[0])
+
+    def test_turns_counted_the_older_way_also_mark_a_carried_conversation(self):
+        self.line(500_000)
+        self.use(360_000, turns=6, legacy=True)
+        self.assertEqual(self.notes(), [])
+
+    def test_a_fork_is_carried_over_even_when_its_first_check_has_no_usage_yet(self):
+        self.line(500_000)
+        fork = {"history_base": {"thread_id": "parent", "end_byte_offset": 1}}
+        self.use(None, turns=1, meta=fork)
+        self.assertEqual(self.notes(), [])
+        self.use(360_000, turns=1, meta=fork)
+        self.assertEqual(self.notes("PostToolUse"), [])
+        self.use(405_000, turns=1, meta=fork)
+        self.assertIn("是否需要交接", self.notes()[0])
+
+    def test_a_new_conversation_whose_first_check_has_no_usage_hears_its_tier_later(self):
+        self.line(500_000)
+        self.use(None, turns=1)
+        self.assertEqual(self.notes(), [])
+        self.use(360_000, turns=1)
+        self.assertIn("只做 checkpoint", self.notes("PostToolUse")[0])
+
+    def test_after_a_tool_the_request_that_just_ended_counts(self):
+        self.line(500_000)
+        self.use(300_000, after=[{"type": "token_usage_record", "payload": {"usage": {"total_tokens": 405_000}}}])
+        self.assertIn("是否需要交接", self.notes("PostToolUse")[0])
+
+    def test_what_came_in_since_the_last_request_counts_but_image_data_does_not(self):
+        self.line(500_000)
+        image = {"type": "response_item", "payload": {"type": "function_call_output", "output": [
+            {"type": "input_image", "image_url": "data:image/png;base64," + "A" * 400_000}]}}
+        self.use(330_000, after=[image])
+        self.assertEqual(self.notes("PostToolUse"), [])
+        text = {"type": "response_item", "payload": {"type": "function_call_output", "output": "x" * 120_000}}
+        self.use(330_000, after=[image, text])
+        told = self.notes("PostToolUse")[0]
+        self.assertIn("只做 checkpoint", told)
+        self.assertIn("36.0 万", told)
+
+    def test_a_long_first_line_is_still_read(self):
+        self.line(500_000)
+        self.use(360_000, meta={"base_instructions": {"text": "x" * 100_000}})
+        self.assertIn("只做 checkpoint", self.notes()[0])
 
     def test_a_new_conversation_that_starts_big_still_hears_its_tier(self):
         self.line(500_000)
@@ -217,6 +266,31 @@ class CheckpointWatch(World):
 
 
 class Main(unittest.TestCase):
+    def test_a_failing_stdout_still_exits_zero(self):
+        class Broken(io.StringIO):
+            def write(self, text):
+                raise BrokenPipeError()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(hg, "handle", return_value={"x": 1}), \
+                mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"{}"))), \
+                mock.patch.object(sys, "stdout", Broken()), mock.patch.object(sys, "stderr", io.StringIO()):
+            self.assertEqual(hg.main(["--state-dir", tmp]), 0)
+
+    def test_old_sessions_are_pruned_and_one_lock_serves_the_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            for number in range(hg.KEEP_SESSIONS + 3):
+                path = folder / ("s%d.json" % number)
+                path.write_text("{}", encoding="utf-8")
+                Path(str(path) + ".lock").write_text("", encoding="utf-8")
+                os.utime(path, (number, number))
+            with hg.State(folder, "s-new"):
+                pass
+            self.assertEqual(len(list(folder.glob("*.json"))), hg.KEEP_SESSIONS)
+            self.assertFalse((folder / "s0.json").exists())
+            self.assertFalse((folder / "s0.json.lock").exists())
+            self.assertTrue((folder / "s-new.json").exists())
+            self.assertEqual(list(folder.glob("*.tmp")) + list(folder.glob(".*.tmp")), [])
+
     def test_bad_input_prints_nothing_and_exits_zero(self):
         out = io.StringIO()
         with mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"not json"))), \
@@ -246,6 +320,43 @@ class Installer(unittest.TestCase):
             data = json.loads(hooks.read_text(encoding="utf-8"))["hooks"]
             self.assertEqual(data, {"UserPromptSubmit": [{"hooks": [other]}]})
             self.assertFalse((Path(tmp) / "jiaobang").exists())
+
+    def test_install_knows_its_own_entries_by_path_on_any_system_and_nothing_else(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"CODEX_HOME": tmp}), \
+                mock.patch.object(sys, "stdout", io.StringIO()):
+            hooks = Path(tmp) / "hooks.json"
+            windows = {"type": "command", "command": '"C:\\Python\\python.exe" -X utf8 "C:\\Users\\a\\.codex\\jiaobang\\handoff_guard.py"'}
+            lookalike = {"type": "command", "command": "python3 /opt/notjiaobang/handoff_guard.py"}
+            hooks.write_text(json.dumps({"hooks": {"PostToolUse": [{"hooks": [windows, lookalike]}]}}), encoding="utf-8")
+            installer.main([])
+            installer.main([])
+            commands = [h["command"] for g in json.loads(hooks.read_text(encoding="utf-8"))["hooks"]["PostToolUse"]
+                        for h in g["hooks"]]
+            self.assertEqual(len(commands), 2)
+            self.assertIn(lookalike["command"], commands)
+            self.assertNotIn(windows["command"], commands)
+            self.assertEqual(len(list(Path(tmp).glob("hooks.json.bak-jiaobang-*"))), 2)
+
+    def test_a_broken_hooks_file_is_left_untouched(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"CODEX_HOME": tmp}), \
+                mock.patch.object(sys, "stdout", io.StringIO()), mock.patch.object(sys, "stderr", io.StringIO()):
+            hooks = Path(tmp) / "hooks.json"
+            for text in ("{not json", json.dumps({"hooks": []}), json.dumps({"hooks": {"Stop": [{"hooks": "x"}]}})):
+                hooks.write_text(text, encoding="utf-8")
+                self.assertEqual(installer.main([]), 1)
+                self.assertEqual(hooks.read_text(encoding="utf-8"), text)
+            self.assertFalse((Path(tmp) / "jiaobang").exists())
+
+    def test_uninstall_leaves_files_it_did_not_put_there(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"CODEX_HOME": tmp}), \
+                mock.patch.object(sys, "stdout", io.StringIO()):
+            installer.main([])
+            mine = Path(tmp) / "jiaobang" / "notes.txt"
+            mine.write_text("keep", encoding="utf-8")
+            installer.main(["--uninstall"])
+            self.assertTrue(mine.is_file())
+            self.assertFalse((Path(tmp) / "jiaobang" / "handoff_guard.py").exists())
+            self.assertFalse((Path(tmp) / "skills" / "jiaobang-handoff").exists())
 
 
 if __name__ == "__main__":

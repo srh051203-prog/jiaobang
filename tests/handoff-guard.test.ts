@@ -16,6 +16,7 @@ type World = {
   denies?: boolean
   failsWrites?: boolean
   turns?: number
+  isTurnsBroken?: boolean
 }
 
 // Stands for the engine: the live context figures, and the prompt as it lands.
@@ -23,7 +24,12 @@ function world(on: On, init: World) {
   const live = { sid: 'sid-1', ...init, breakdownReads: 0 }
 
   on('session.id', () => ({ value: live.sid }))
-  on('session.turns', () => ({ value: live.turns ?? 0 }))
+  on('session.turns', () => {
+    if (live.isTurnsBroken) {
+      throw new Error('turns unavailable')
+    }
+    return { value: live.turns ?? 0 }
+  })
   if (init.isStoreBroken) {
     on('store.get', () => {
       throw new Error('store unavailable')
@@ -438,6 +444,11 @@ describe('handoff-guard sessions', () => {
 
   test('a new conversation that starts big still hears its tier', async ($, on) => {
     world(on, { tokens: 360_000, window: 533_000, compactAt: 500_000, sid: 'fresh', turns: 1 })
+    expect((await notes($))[0]).toContain('只做 checkpoint')
+  })
+
+  test('a turn count that fails still lets the tier through', async ($, on) => {
+    world(on, { tokens: 360_000, window: 533_000, compactAt: 500_000, sid: 'unknown', isTurnsBroken: true })
     expect((await notes($))[0]).toContain('只做 checkpoint')
   })
 

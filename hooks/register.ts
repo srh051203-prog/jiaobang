@@ -189,6 +189,15 @@ async function sync($: EngineInterface): Promise<Synced> {
   return { sid, done, count, isFresh: true, isUnseen: entry === undefined && done.length === 0 }
 }
 
+// Counted as a new conversation when the engine cannot say.
+async function turnsSoFar($: EngineInterface): Promise<number> {
+  try {
+    return await $.session.turns()
+  } catch {
+    return 0
+  }
+}
+
 async function saved($: EngineInterface): Promise<HandoffGuardSaved> {
   try {
     const value = await $.store.get(SAVED)
@@ -246,13 +255,14 @@ async function notesFor($: EngineInterface, via: 'prompt' | 'tool'): Promise<str
         await persist($, sid, [], count)
       }
     } else if (!done.includes(top.id)) {
-      const now = [...new Set([...done, ...reached.map(tier => tier.id)])]
-      await $.state.set(fired, now)
-      await persist($, sid, now, count)
       // A conversation carried over under a new session id (the desktop app
       // gives a reopened conversation one; a fork gets one too) already heard
       // what it reached under the old id: record it and stay quiet.
-      if (isUnseen && (await $.session.turns()) >= CARRIED_TURNS) {
+      const isCarried = isUnseen && (await turnsSoFar($)) >= CARRIED_TURNS
+      const now = [...new Set([...done, ...reached.map(tier => tier.id)])]
+      await $.state.set(fired, now)
+      await persist($, sid, now, count)
+      if (isCarried) {
         return via === 'tool' ? notes.map(note => note + VIA_TOOL) : notes
       }
       if (top.id === 'reevaluate') {

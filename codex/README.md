@@ -7,11 +7,11 @@
 - **工具调用后也检查**，压缩后提醒先回读 checkpoint，从第 2 次压缩起提醒「摘要叠在摘要上」。
 - **盯着 checkpoint**：90% 那次提醒后一整轮，任务目录的 `.handoff/checkpoints/` 里都没有新文件，就再提醒一次。
 - **不重复唠叨**：状态按会话 ID 存在 `~/.codex/state/jiaobang/`（留最近 50 个会话）。
-- 脚本只读不写交接、不开对话、不拦任何操作；出错就什么都不输出。
+- 脚本只读不写交接、不开对话、不拦任何操作；出错时不附提醒、照常放行（错误只写到 stderr）。
 
 ## 安装
 
-需要 Python 3.9 或更新（macOS 自带的就行），只用 Python 自带的库。
+需要 Python 3.9 或更新（macOS 自带的就行），只用 Python 自带的库。在 macOS 上的 Codex CLI 0.163.0 测过：真的 `codex exec` 会调用这四个 hook，提醒会送到模型；它读的会话记录和日志格式不是 Codex 的公开接口，以后的版本可能会变。Windows 还没测过。
 
 ```bash
 git clone https://github.com/srh051203-prog/jiaobang.git
@@ -22,7 +22,7 @@ python3 jiaobang/codex/install.py
 
 - 把提醒脚本复制到 `~/.codex/jiaobang/handoff_guard.py`
 - 把技能复制到 `~/.codex/skills/jiaobang-handoff/`
-- 先备份 `~/.codex/hooks.json`（`hooks.json.bak-jiaobang-<时间>`），再加上 UserPromptSubmit、PostToolUse、PreCompact、PostCompact 四个 hook，**原有的 hook 一个不动**
+- 先备份 `~/.codex/hooks.json`（`hooks.json.bak-jiaobang-<时间>`），再加上 UserPromptSubmit、PostToolUse、PreCompact、PostCompact 四个 hook，**原有的 hook 一个不动**；`hooks.json` 读不懂时什么都不改，让你先修好
 
 重新打开 Codex 后生效；如果 Codex 询问是否信任新的 hooks，选信任。再跑一次就是更新，不会重复添加。如果 `hooks.json` 里已经有别的交接类 hook，安装脚本会列出来提醒你：两套同时开会重复提醒。
 

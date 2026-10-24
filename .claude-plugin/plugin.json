@@ -1,6 +1,6 @@
 {
   "name": "handoff-guard",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "按真实上下文用量和压缩事件提醒保存 checkpoint、评估交接，并带 /handoff 交接技能",
   "author": { "name": "srh051203-prog" },
   "license": "MIT",

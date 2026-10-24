@@ -40,6 +40,17 @@ Claude 桌面 App 里 `/plugin` 用不了：点输入框旁边的 **+** → **Pl
 
 装好后新开一个会话（或输入 `/reload-plugins`）就生效。
 
+### Codex
+
+需要 Python 3.9 或更新（在 macOS 上的 Codex CLI 0.163.0 测过，Windows 还没测过）。在 shell 里：
+
+```bash
+git clone https://github.com/srh051203-prog/jiaobang.git
+python3 jiaobang/codex/install.py
+```
+
+重新打开 Codex 后生效（问是否信任新的 hooks 时选信任）。安装脚本做了什么、怎么更新和卸载，看 [codex/README.md](codex/README.md)。
+
 ## 用法
 
 - **自动**：什么都不用做，到档位会提醒。

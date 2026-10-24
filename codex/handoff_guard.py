@@ -37,12 +37,13 @@ FALLBACK_RATIO = 0.9
 # The compaction line is read again after this many checks.
 REREAD_AFTER = 20
 STACKED_AT = 2
-# A session first seen with at least this many user turns in its rollout is an
-# earlier conversation carried over (a fork), not a new one.
+# A session first seen with at least this many user turns in its rollout (or
+# forked from another one) is an earlier conversation carried over, not a new one.
 CARRIED_TURNS = 2
 KEEP_SESSIONS = 50
 TAIL_BYTES = 2 * 1024 * 1024
 SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+IMAGE_DATA = re.compile(rb'data:image/[^"]*')
 
 STACKED = "摘要叠在摘要上，早期细节会逐代丢失；把这点算进评估，但是否建议交接由你自己判断，不是默认结论。"
 VIA_TOOL = "（这条是 handoff-guard 跟着工具结果附上的提醒，不是工具输出，也不是用户的新消息；先做完手上这一步再按它处理。）"
@@ -76,43 +77,64 @@ def session_meta(transcript):
         return None
     try:
         with open(transcript, "rb") as handle:
-            first = json.loads(handle.readline(65536))
+            first = json.loads(handle.readline())
         return first.get("payload") if first.get("type") == "session_meta" else None
     except (OSError, ValueError, AttributeError):
         return None
 
 
 def usage(event):
-    """The context the last model request carried, the model's window, and
-    how many user turns the rollout's tail holds."""
+    """What the session's rollout says: the context the model is carrying and
+    its window (None before the first request), and whether this is an earlier
+    conversation carried over (a fork, or one already under way)."""
     transcript = event.get("transcript_path")
     meta = session_meta(transcript)
     if meta is None or meta.get("id") != event.get("session_id"):
         return None
-    latest = None
-    turns = 0
+    tokens = window = None
+    added = turns = legacy = 0
     with open(transcript, "rb") as handle:
         size = os.fstat(handle.fileno()).st_size
         handle.seek(max(0, size - TAIL_BYTES))
-        if handle.tell():
+        cut = handle.tell() > 0
+        if cut:
             handle.readline()
         for line in handle:
             try:
                 row = json.loads(line)
+                kind = row.get("type")
                 data = row.get("payload") or {}
-                if row.get("type") == "event_msg" and data.get("type") == "user_message":
-                    turns += 1
-                if row.get("type") != "event_msg" or data.get("type") != "token_count":
+                what = data.get("type")
+                if kind == "response_item":
+                    # What came in since the last request; Codex counts it at
+                    # about 4 bytes a token. Image data is left out.
+                    added += len(IMAGE_DATA.sub(b"", line)) // 4
                     continue
-                info = data.get("info") or {}
-                last = info.get("last_token_usage") or {}
-                tokens = last.get("total_tokens")
-                window = info.get("model_context_window")
-                if isinstance(tokens, int) and isinstance(window, int) and window > 0 and tokens >= 0:
-                    latest = (tokens, window)
+                if kind == "token_usage_record":
+                    # Written as each request ends, before its tools run and
+                    # before that request's token_count.
+                    value = (data.get("usage") or {}).get("total_tokens")
+                elif kind == "event_msg" and what == "token_count":
+                    info = data.get("info") or {}
+                    value = (info.get("last_token_usage") or {}).get("total_tokens")
+                    if isinstance(info.get("model_context_window"), int):
+                        window = info["model_context_window"]
+                else:
+                    if kind == "event_msg" and what == "task_started" and isinstance(data.get("model_context_window"), int):
+                        window = data["model_context_window"]
+                    elif kind == "event_msg" and what == "user_message":
+                        legacy += 1
+                    elif kind == "event_msg" and what == "item_completed" and (data.get("item") or {}).get("type") == "UserMessage":
+                        turns += 1
+                    continue
+                if isinstance(value, int) and value >= 0 and value != tokens:
+                    tokens, added = value, 0
             except (ValueError, AttributeError):
                 continue
-    return (latest[0], latest[1], turns) if latest else None
+    carried = bool(meta.get("history_base") or meta.get("forked_from_id")) or cut or max(turns, legacy) >= CARRIED_TURNS
+    if not (isinstance(window, int) and window > 0):
+        tokens = None
+    return {"tokens": None if tokens is None else tokens + added, "window": window, "carried": carried}
 
 
 def runtime_line(session):
@@ -178,13 +200,15 @@ def checkpoint_written_since(cwd, since):
 class State:
     def __init__(self, folder, session):
         self.folder = Path(folder)
+        self.session = session
         self.path = self.folder / ("%s.json" % session)
         self.lock = None
 
     def __enter__(self):
         self.folder.mkdir(parents=True, exist_ok=True)
         if fcntl:
-            self.lock = open(str(self.path) + ".lock", "w")
+            # One lock for the folder, so pruning other sessions' files is safe.
+            self.lock = open(str(self.folder / ".lock"), "w")
             fcntl.flock(self.lock, fcntl.LOCK_EX)
         unseen = not self.path.exists()
         try:
@@ -203,7 +227,7 @@ class State:
     def __exit__(self, kind, value, trace):
         self.data.pop("unseen", None)
         if kind is None:
-            temporary = self.path.with_suffix(".json.tmp")
+            temporary = self.folder / (".%s.%d.tmp" % (self.session, os.getpid()))
             temporary.write_text(json.dumps(self.data, ensure_ascii=False), encoding="utf-8")
             os.replace(temporary, self.path)
             prune(self.folder)
@@ -213,9 +237,16 @@ class State:
 
 
 def prune(folder):
-    files = sorted(folder.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
-    for stale in files[KEEP_SESSIONS:]:
-        for path in (stale, Path(str(stale) + ".lock")):
+    def age(path):
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0
+    files = sorted(folder.glob("*.json"), key=age, reverse=True)
+    stale = files[KEEP_SESSIONS:] + [path for path in folder.glob(".*.tmp") if age(path) < time.time() - 3600]
+    for old in stale:
+        # *.json.lock: the per-session locks of earlier versions.
+        for path in (old, Path(str(old) + ".lock")):
             try:
                 path.unlink()
             except OSError:
@@ -264,7 +295,7 @@ def nudge_note(tokens, sid):
 
 # --- the events ----------------------------------------------------------
 
-def notes_for(state, event, via):
+def notes_for(state, event, via, seen):
     sid = event["session_id"]
     notes = []
     wait = state.get("awaiting")
@@ -276,21 +307,21 @@ def notes_for(state, event, via):
         notes.append(compact_note(state["pending"], sid))
         state["pending"] = None
 
-    seen = usage(event)
-    if seen:
-        tokens, window, turns = seen
+    if seen and seen["tokens"] is not None:
+        tokens, window = seen["tokens"], seen["window"]
+        # Only the first reading of a carried-over conversation stays quiet.
+        carried = state.pop("carried", False)
         line, source = compaction_line(state, sid, window)
         reached = [name for name, at in TIERS if tokens >= at(line)]
         if not reached:
             state["fired"] = []
         elif reached[-1] not in state["fired"]:
             state["fired"] = sorted(set(state["fired"]) | set(reached), key=[name for name, _ in TIERS].index)
-            if state.get("unseen") and turns >= CARRIED_TURNS:
-                # Carried over from an earlier session id: told there already.
-                return [note + VIA_TOOL for note in notes] if via == "tool" else notes
-            if reached[-1] == "reevaluate":
-                state["awaiting"] = {"tokens": tokens, "at": time.time()}
-            notes.append(tier_note(reached[-1], tokens, line, source, state["compactions"], sid))
+            if not carried:
+                # (A carried-over conversation was told under its earlier id.)
+                if reached[-1] == "reevaluate":
+                    state["awaiting"] = {"tokens": tokens, "at": time.time()}
+                notes.append(tier_note(reached[-1], tokens, line, source, state["compactions"], sid))
     return [note + VIA_TOOL for note in notes] if via == "tool" else notes
 
 
@@ -302,9 +333,11 @@ def handle(event, state_dir):
     if name == "UserPromptSubmit" and str(event.get("prompt", "")).lstrip().startswith("/"):
         return None
     with State(state_dir, sid) as state:
+        seen = usage(event)
+        if state.get("unseen"):
+            state["carried"] = bool(seen and seen["carried"])
         if name == "PreCompact":
-            seen = usage(event)
-            state["before"] = seen[0] if seen else 0
+            state["before"] = (seen and seen["tokens"]) or 0
             return None
         if name == "PostCompact":
             state["compactions"] += 1
@@ -314,7 +347,7 @@ def handle(event, state_dir):
             state["before"], state["fired"], state["awaiting"] = 0, [], None
             return None
         if name in ("UserPromptSubmit", "PostToolUse"):
-            notes = notes_for(state, event, "prompt" if name == "UserPromptSubmit" else "tool")
+            notes = notes_for(state, event, "prompt" if name == "UserPromptSubmit" else "tool", seen)
             if notes:
                 return {"hookSpecificOutput": {"hookEventName": name, "additionalContext": "\n\n".join(notes)}}
     return None
@@ -327,11 +360,10 @@ def main(argv=None):
     try:
         event = json.loads(sys.stdin.buffer.read().decode("utf-8") or "{}")
         result = handle(event, args.state_dir)
+        if result:
+            sys.stdout.write(json.dumps(result, ensure_ascii=False))
     except Exception as error:  # Never stand in Codex's way.
         print("handoff-guard: %s" % error, file=sys.stderr)
-        return 0
-    if result:
-        sys.stdout.write(json.dumps(result, ensure_ascii=False))
     return 0
 
 

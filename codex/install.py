@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import time
@@ -23,7 +24,12 @@ EVENTS = {
     "PreCompact": "^(auto|manual)$",
     "PostCompact": "^(auto|manual)$",
 }
-MARK = "jiaobang/handoff_guard.py"
+# Our own entries, wherever CODEX_HOME is and whichever path separator.
+OURS = re.compile(r"[\\/]jiaobang[\\/]handoff_guard\.py\b")
+
+
+def ours(hook):
+    return bool(OURS.search(str(hook.get("command", ""))))
 
 
 def without_ours(hooks):
@@ -32,7 +38,7 @@ def without_ours(hooks):
     for event, groups in hooks.items():
         left = []
         for group in groups:
-            entries = [h for h in group.get("hooks", []) if MARK not in str(h.get("command", ""))]
+            entries = [h for h in group.get("hooks", []) if not ours(h)]
             if entries:
                 left.append(dict(group, hooks=entries))
         if left:
@@ -52,15 +58,37 @@ def main(argv=None):
 
     config = {"hooks": {}}
     if hooks_file.exists():
-        config = json.loads(hooks_file.read_text(encoding="utf-8"))
-        backup = hooks_file.with_name("hooks.json.bak-jiaobang-%s" % time.strftime("%Y%m%d-%H%M%S"))
+        try:
+            config = json.loads(hooks_file.read_text(encoding="utf-8"))
+            hooks = config.get("hooks", {})
+            if not isinstance(hooks, dict) or not all(
+                    isinstance(groups, list) and all(isinstance(g, dict) and isinstance(g.get("hooks", []), list)
+                                                     and all(isinstance(h, dict) for h in g.get("hooks", []))
+                                                     for g in groups)
+                    for groups in hooks.values()):
+                raise ValueError("hooks 的结构不对")
+        except (OSError, ValueError, AttributeError) as error:
+            print("没有改动：读不懂 %s（%s），先修好它再运行。" % (hooks_file, error), file=sys.stderr)
+            return 1
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = hooks_file.with_name("hooks.json.bak-jiaobang-%s" % stamp)
+        number = 1
+        while backup.exists():
+            number += 1
+            backup = hooks_file.with_name("hooks.json.bak-jiaobang-%s-%d" % (stamp, number))
         shutil.copy2(hooks_file, backup)
         print("已备份 hooks.json → %s" % backup)
     hooks = without_ours(config.get("hooks", {}))
 
     if args.uninstall:
-        shutil.rmtree(script.parent, ignore_errors=True)
-        shutil.rmtree(skill, ignore_errors=True)
+        for path in (script, skill / "SKILL.md"):
+            if path.exists():
+                path.unlink()
+        for folder in (script.parent, skill):
+            try:
+                folder.rmdir()  # only when nothing else is left in it
+            except OSError:
+                pass
         print("已删除提醒脚本和 jiaobang-handoff 技能")
     else:
         script.parent.mkdir(parents=True, exist_ok=True)
@@ -79,11 +107,13 @@ def main(argv=None):
 
     config["hooks"] = hooks
     hooks_file.parent.mkdir(parents=True, exist_ok=True)
-    hooks_file.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary = hooks_file.with_name("hooks.json.tmp-jiaobang")
+    temporary.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, hooks_file)
     print("已更新 %s" % hooks_file)
 
     others = sorted({h.get("command", "") for groups in hooks.values() for g in groups for h in g.get("hooks", [])
-                     if "handoff" in str(h.get("command", "")).lower() and MARK not in str(h.get("command", ""))})
+                     if "handoff" in str(h.get("command", "")).lower() and not ours(h)})
     if others and not args.uninstall:
         print("\n注意：hooks.json 里还有别的交接类 hook，两套同时开会重复提醒：")
         for command in others:
