@@ -35,7 +35,7 @@ description: 在 Codex 中保存进度、生成正式交接材料或读取交接
 
 ## 自动提醒（handoff-guard）
 
-handoff-guard 脚本挂在 Codex 的 UserPromptSubmit、PostToolUse、PreCompact、PostCompact 四个 hook 上，会附上以 `[handoff-guard]` 开头的提醒：用户发消息时附上，我自己调用工具之后也会附上（这时末尾注明它不是工具输出，也不是用户的新消息；先做完手上这一步再处理）。数字来自 Codex 会话记录里的真实用量；压缩线优先用 Codex 自己记录的值，其次是 `config.toml` 里的 `model_auto_compact_token_limit`，都没有才按窗口的 90% 估计并标明「估计」。每一档在每段上下文里只出现一次，状态按会话 ID 存在 `~/.codex/state/jiaobang/`。
+handoff-guard 脚本挂在 Codex 的 UserPromptSubmit、PostToolUse、PreCompact、PostCompact 四个 hook 上，会附上以 `[handoff-guard]` 开头的提醒：用户发消息时附上，我自己调用工具之后也会附上（这时末尾注明它不是工具输出，也不是用户的新消息；先做完手上这一步再处理）。数字来自 Codex 会话记录里的真实用量；压缩线优先用 Codex 自己记录的值，其次是 `config.toml` 里的 `model_auto_compact_token_limit`，都没有才按窗口的 90% 估计并标明「估计」。每一档在每段上下文里只出现一次，状态按会话 ID 存在 `~/.codex/state/jiaobang/`；分叉出来、带着原来对话的新会话，已越过的档位悄悄记上，不重复提醒。
 
 - **checkpoint 档**（压缩线的 70%，最晚 50 万 token）：先做完手上最小的工作单元，再综合评估整个会话。有长期价值就按「保存进度」写入或刷新 checkpoint 并回读；确实没有就跳过。这一档**安静地做**：回复里不提这条提醒，也不汇报 checkpoint。
 - **评估档**（压缩线的 80%）：评估整个会话是否需要交接。需要时先保存或刷新 checkpoint，并在最终回复正文最前面单独一段以「交接建议：」写明原因、接续第一步，并说明确认后会保存交接、给出新对话的开场白；不需要时用一句话说明理由。

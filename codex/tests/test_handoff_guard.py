@@ -42,8 +42,10 @@ class World(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.use(100_000)
 
-    def use(self, tokens, window=533_000, session=SID, source="vscode"):
-        rows = [{"type": "session_meta", "payload": {"id": session, "source": source}},
+    def use(self, tokens, window=533_000, session=SID, source="vscode", turns=0):
+        rows = [{"type": "session_meta", "payload": {"id": session, "source": source}}]
+        rows += [{"type": "event_msg", "payload": {"type": "user_message", "message": "hi"}}] * turns
+        rows += [
                 {"type": "event_msg", "payload": {"type": "token_count", "info": {
                     "last_token_usage": {"total_tokens": tokens}, "model_context_window": window}}}]
         self.rollout.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
@@ -101,6 +103,19 @@ class Tiers(World):
         self.line(500_000)
         self.use(510_000)
         self.assertIn("已经超过自动压缩线", self.notes()[0])
+
+    def test_a_conversation_carried_over_under_a_new_id_stays_quiet_for_what_it_reached(self):
+        self.line(500_000)
+        self.use(360_000, turns=6)
+        self.assertEqual(self.notes(), [])
+        self.assertEqual(self.notes("PostToolUse"), [])
+        self.use(405_000, turns=7)
+        self.assertIn("是否需要交接", self.notes()[0])
+
+    def test_a_new_conversation_that_starts_big_still_hears_its_tier(self):
+        self.line(500_000)
+        self.use(360_000, turns=1)
+        self.assertIn("只做 checkpoint", self.notes()[0])
 
     def test_slash_commands_and_subagents_are_left_alone(self):
         self.line(500_000)

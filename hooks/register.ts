@@ -30,6 +30,10 @@ const REREAD_AFTER = 20
 const SAVED = 'sessions'
 const SAVED_MAX = 50
 
+// A session first seen with at least this many user turns in its transcript is
+// an earlier conversation carried over, not a new one.
+const CARRIED_TURNS = 2
+
 // Each tier speaks once per stretch of context; falling back under the first
 // one (a compaction, /clear, a rewind) arms them all again.
 const TIERS: { id: HandoffGuardTier; at: (compactAt: number) => number }[] = [
@@ -158,7 +162,7 @@ export const register: Register = on => {
   })
 }
 
-type Synced = { sid: string; done: HandoffGuardTier[]; count: number; isFresh: boolean }
+type Synced = { sid: string; done: HandoffGuardTier[]; count: number; isFresh: boolean; isUnseen: boolean }
 
 // The values for the session running now. `$.state` reads one moment per
 // dispatch, so what this sets is handed back rather than read again.
@@ -168,7 +172,7 @@ async function sync($: EngineInterface): Promise<Synced> {
   const { value: liveDone = [] } = await $.state.get(fired)
   const { value: liveCount = 0 } = await $.state.get(compactions)
   if (current === sid) {
-    return { sid, done: liveDone, count: liveCount, isFresh: false }
+    return { sid, done: liveDone, count: liveCount, isFresh: false, isUnseen: false }
   }
 
   // A process meeting this session for the first time: what an earlier one
@@ -182,7 +186,7 @@ async function sync($: EngineInterface): Promise<Synced> {
   await $.state.set(awaiting, null)
   await $.state.set(owner, sid)
 
-  return { sid, done, count, isFresh: true }
+  return { sid, done, count, isFresh: true, isUnseen: entry === undefined && done.length === 0 }
 }
 
 async function saved($: EngineInterface): Promise<HandoffGuardSaved> {
@@ -210,7 +214,7 @@ async function persist($: EngineInterface, sid: string, done: HandoffGuardTier[]
 }
 
 async function notesFor($: EngineInterface, via: 'prompt' | 'tool'): Promise<string[]> {
-  const { sid, done, count, isFresh } = await sync($)
+  const { sid, done, count, isFresh, isUnseen } = await sync($)
   const notes: string[] = []
 
   // A whole turn went by after the last saving point asked for a checkpoint
@@ -245,6 +249,12 @@ async function notesFor($: EngineInterface, via: 'prompt' | 'tool'): Promise<str
       const now = [...new Set([...done, ...reached.map(tier => tier.id)])]
       await $.state.set(fired, now)
       await persist($, sid, now, count)
+      // A conversation carried over under a new session id (the desktop app
+      // gives a reopened conversation one; a fork gets one too) already heard
+      // what it reached under the old id: record it and stay quiet.
+      if (isUnseen && (await $.session.turns()) >= CARRIED_TURNS) {
+        return via === 'tool' ? notes.map(note => note + VIA_TOOL) : notes
+      }
       if (top.id === 'reevaluate') {
         await $.state.set(awaiting, { tokens })
       }

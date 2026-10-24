@@ -37,6 +37,9 @@ FALLBACK_RATIO = 0.9
 # The compaction line is read again after this many checks.
 REREAD_AFTER = 20
 STACKED_AT = 2
+# A session first seen with at least this many user turns in its rollout is an
+# earlier conversation carried over (a fork), not a new one.
+CARRIED_TURNS = 2
 KEEP_SESSIONS = 50
 TAIL_BYTES = 2 * 1024 * 1024
 SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -80,12 +83,14 @@ def session_meta(transcript):
 
 
 def usage(event):
-    """The context the last model request carried, and the model's window."""
+    """The context the last model request carried, the model's window, and
+    how many user turns the rollout's tail holds."""
     transcript = event.get("transcript_path")
     meta = session_meta(transcript)
     if meta is None or meta.get("id") != event.get("session_id"):
         return None
     latest = None
+    turns = 0
     with open(transcript, "rb") as handle:
         size = os.fstat(handle.fileno()).st_size
         handle.seek(max(0, size - TAIL_BYTES))
@@ -95,6 +100,8 @@ def usage(event):
             try:
                 row = json.loads(line)
                 data = row.get("payload") or {}
+                if row.get("type") == "event_msg" and data.get("type") == "user_message":
+                    turns += 1
                 if row.get("type") != "event_msg" or data.get("type") != "token_count":
                     continue
                 info = data.get("info") or {}
@@ -105,7 +112,7 @@ def usage(event):
                     latest = (tokens, window)
             except (ValueError, AttributeError):
                 continue
-    return latest
+    return (latest[0], latest[1], turns) if latest else None
 
 
 def runtime_line(session):
@@ -179,10 +186,12 @@ class State:
         if fcntl:
             self.lock = open(str(self.path) + ".lock", "w")
             fcntl.flock(self.lock, fcntl.LOCK_EX)
+        unseen = not self.path.exists()
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             data = {}
+        data["unseen"] = unseen
         data.setdefault("fired", [])
         data.setdefault("compactions", 0)
         data.setdefault("pending", None)
@@ -192,6 +201,7 @@ class State:
         return data
 
     def __exit__(self, kind, value, trace):
+        self.data.pop("unseen", None)
         if kind is None:
             temporary = self.path.with_suffix(".json.tmp")
             temporary.write_text(json.dumps(self.data, ensure_ascii=False), encoding="utf-8")
@@ -268,13 +278,16 @@ def notes_for(state, event, via):
 
     seen = usage(event)
     if seen:
-        tokens, window = seen
+        tokens, window, turns = seen
         line, source = compaction_line(state, sid, window)
         reached = [name for name, at in TIERS if tokens >= at(line)]
         if not reached:
             state["fired"] = []
         elif reached[-1] not in state["fired"]:
             state["fired"] = sorted(set(state["fired"]) | set(reached), key=[name for name, _ in TIERS].index)
+            if state.get("unseen") and turns >= CARRIED_TURNS:
+                # Carried over from an earlier session id: told there already.
+                return [note + VIA_TOOL for note in notes] if via == "tool" else notes
             if reached[-1] == "reevaluate":
                 state["awaiting"] = {"tokens": tokens, "at": time.time()}
             notes.append(tier_note(reached[-1], tokens, line, source, state["compactions"], sid))

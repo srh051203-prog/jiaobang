@@ -15,6 +15,7 @@ type World = {
   isStoreBroken?: boolean
   denies?: boolean
   failsWrites?: boolean
+  turns?: number
 }
 
 // Stands for the engine: the live context figures, and the prompt as it lands.
@@ -22,6 +23,7 @@ function world(on: On, init: World) {
   const live = { sid: 'sid-1', ...init, breakdownReads: 0 }
 
   on('session.id', () => ({ value: live.sid }))
+  on('session.turns', () => ({ value: live.turns ?? 0 }))
   if (init.isStoreBroken) {
     on('store.get', () => {
       throw new Error('store unavailable')
@@ -423,6 +425,20 @@ describe('handoff-guard sessions', () => {
 
     live.sid = 'sid-1'
     expect(await notes($)).toEqual([])
+  })
+
+  test('a conversation carried over under a new id does not hear again what it reached', async ($, on) => {
+    const live = world(on, { tokens: 360_000, window: 533_000, compactAt: 500_000, sid: 'reopened', turns: 12 })
+    expect(await notes($)).toEqual([])
+    expect(await afterTool($)).toEqual([])
+
+    live.tokens = 405_000
+    expect((await notes($))[0]).toContain('是否需要交接')
+  })
+
+  test('a new conversation that starts big still hears its tier', async ($, on) => {
+    world(on, { tokens: 360_000, window: 533_000, compactAt: 500_000, sid: 'fresh', turns: 1 })
+    expect((await notes($))[0]).toContain('只做 checkpoint')
   })
 
   test('a store that fails still lets the notes through', async ($, on) => {
