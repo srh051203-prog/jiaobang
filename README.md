@@ -5,20 +5,20 @@
 **交棒**是一个 Claude Code 插件（`handoff-guard`），带一个 `handoff` 交接技能：
 
 - **按真实用量提醒**：读 Claude Code 自己报告的上下文 token 数和自动压缩线，到压缩线的 70% / 80% / 90% 各提醒一次。
-  - 70%：悄悄保存一份 checkpoint，不打扰你。
+  - 70%：会话有长期价值就悄悄保存一份 checkpoint，不打扰你；没有就跳过。
   - 80%：评估要不要交接，需要就在回复开头写「交接建议：」。
   - 90%：压缩前最后一个保存点，有价值就一律先刷新 checkpoint。
 - **工具调用后也检查**：一轮里连着调用很多工具时，冲过档位或中途压缩，下一次工具调用后就会提醒，不用等你下一条消息。
 - **压缩前后都照顾到**：压缩时给摘要器加一份「必须保留」清单（目标、决定、否决路线、文件、进度）；压缩后提醒先回读 checkpoint。
 - **盯着 checkpoint 有没有写**：90% 那次提醒后一整轮都没写，就再提醒一次。
-- **不重复唠叨**：已提醒过的档位按会话 ID 存下来，续接、重启后不会再提醒一遍。
+- **不重复唠叨**：已提醒过的档位按会话 ID 存下来（记最近 50 个会话），续接、重启后一般不会再提醒一遍。
 - **一句话交接**：说「交接」，就保存正式交接、回读核对，并在 Claude 桌面 App 里直接开一个新会话接手。
 
 插件只负责提醒，不会自己写交接、开会话，也不会拦截任何操作；出错就直接放行。
 
 ## 安装
 
-需要 **Claude Code 2.1.308 或更新**的版本（插件接口还在早期测试阶段，以后的版本可能会变）。
+需要 **Claude Code 2.1.303 或更新**的版本（在 2.1.303 命令行和 2.1.308 桌面版上测过；插件接口还在早期测试阶段，以后的版本可能会变）。
 
 在 Claude Code 终端会话里输入：
 
@@ -35,8 +35,6 @@ claude plugin install handoff-guard --marketplace srh051203-prog/jiaobang
 ```
 
 Claude 桌面 App 里 `/plugin` 用不了：点输入框旁边的 **+** → **Plugins** → **Add marketplace**，填 `srh051203-prog/jiaobang`，再 **Add plugin**。
-
-> 这个仓库现在是私有的：只有被邀请的人能装，而且电脑上的 git 要能用自己的 GitHub 账号访问它（比如先运行 `gh auth login`，选 HTTPS 并让它配置 git 凭据）。
 
 装好后新开一个会话（或输入 `/reload-plugins`）就生效。
 
@@ -85,7 +83,7 @@ claude plugin test .
 
 ## English
 
-**jiaobang** ("passing the baton") is a Claude Code plugin, `handoff-guard`, with a `handoff` skill. It reads Claude Code's real context usage and auto-compaction line, reminds the model at 70% / 80% / 90% of that line to save a checkpoint or weigh a handoff, also checks after the model's own tool calls, keeps what a handoff needs through compaction, and remembers per session which reminders it already gave. Saying "交接" (handoff) saves a handoff under `.handoff/` and, in the Claude desktop app, opens a new session to continue. The reminders and the skill are written in Chinese. Requires Claude Code 2.1.308 or later.
+**jiaobang** ("passing the baton") is a Claude Code plugin, `handoff-guard`, with a `handoff` skill. It reads Claude Code's real context usage and auto-compaction line, reminds the model at 70% / 80% / 90% of that line to save a checkpoint or weigh a handoff, also checks after the model's own tool calls, keeps what a handoff needs through compaction, and remembers per session which reminders it already gave. Saying "交接" (handoff) saves a handoff under `.handoff/` and, in the Claude desktop app, opens a new session to continue. The reminders and the skill are written in Chinese. Requires Claude Code 2.1.303 or later.
 
 ## 许可证
 

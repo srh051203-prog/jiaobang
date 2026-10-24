@@ -351,6 +351,13 @@ describe('handoff-guard checkpoint watch', () => {
     expect((await notes($))[0]).toContain('还没看到写入')
   })
 
+  test('a subagent writing a checkpoint does not stand for the main session', async ($, on) => {
+    world(on, { tokens: 455_000, window: 533_000, compactAt: 500_000 })
+    await notes($)
+    await $.tool.call({ tool: 'Write', file_path: '/work/.handoff/checkpoints/other.md', content: '#', agentId: 'agent-1' })
+    expect((await notes($))[0]).toContain('还没看到写入')
+  })
+
   test('the earlier tiers ask for no second look', async ($, on) => {
     const live = world(on, { tokens: 355_000, window: 533_000, compactAt: 500_000 })
     await notes($)
@@ -371,6 +378,13 @@ describe('handoff-guard checkpoint watch', () => {
     expect(isCheckpointWrite('Bash', { command: 'echo note >> .handoff/checkpoints/s.md' })).toBe(true)
     expect(isCheckpointWrite('Bash', { command: "python3 -I - <<'EOF'\np='.handoff/checkpoints/s.md'\nEOF" })).toBe(true)
     expect(isCheckpointWrite('Bash', { command: 'cp a.md .handoff/checkpoints/s.md' })).toBe(true)
+    expect(isCheckpointWrite('Bash', { command: 'mv /tmp/s.md "/w/.handoff/checkpoints/s.md" && ls' })).toBe(true)
+    expect(isCheckpointWrite('Bash', { command: 'printf x | tee -a .handoff/checkpoints/s.md' })).toBe(true)
+    expect(isCheckpointWrite('Bash', { command: "sed -i '' 's/a/b/' .handoff/checkpoints/s.md" })).toBe(true)
+    // Copying a checkpoint out, or comparing inside quotes, reads it.
+    expect(isCheckpointWrite('Bash', { command: 'cp .handoff/checkpoints/s.md backup.md' })).toBe(false)
+    expect(isCheckpointWrite('Bash', { command: "awk '$1 > 5' .handoff/checkpoints/s.md" })).toBe(false)
+    expect(isCheckpointWrite('Bash', { command: 'cat .handoff/checkpoints/s.md > /tmp/copy.md' })).toBe(false)
   })
 
   test('the notes name this session\'s own checkpoint and keep the first tier out of the reply', async ($, on) => {

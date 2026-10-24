@@ -60,9 +60,18 @@ const TRIGGER_LABEL: Record<HandoffGuardCompaction['trigger'], string> = {
 }
 
 const CHECKPOINTS = /\.handoff[\\/]checkpoints[\\/]/
-// A shell command that writes rather than reads: a redirect into a file (not
-// `2>&1` or `2>/dev/null`), or a program that edits or copies files.
-const SHELL_WRITE = /(^|[^0-9&>])>>?\s*[^&\s]|\btee\b|\b(cp|mv|install)\s|\bsed\s+-i|\b(python3?|node|perl|ruby)\b/
+// A shell command that writes INTO the checkpoints folder rather than reads
+// from it: a redirect or `tee` aimed there (not `2>&1`, not a comparison
+// inside quotes), a copy or move whose last argument is there, `sed -i` on a
+// file there, or a script that names the folder.
+const PATH_THERE = String.raw`["']?[^\s"'&|;<>]*\.handoff[\\/]checkpoints[\\/]`
+const SHELL_WRITES = [
+  new RegExp(String.raw`(^|[^0-9&>])>>?\s*` + PATH_THERE),
+  new RegExp(String.raw`\btee\s+(-a\s+)?` + PATH_THERE),
+  new RegExp(String.raw`\b(cp|mv|install)\b[^;&|\n]*\s` + PATH_THERE + String.raw`[^\s"';&|]*["']?\s*($|[;&|\n])`),
+  new RegExp(String.raw`\bsed\s+-i[^;&|\n]*` + PATH_THERE),
+  /\b(python3?|node|perl|ruby)\b/,
+]
 
 /** The compaction instructions with what a later handoff needs kept added last. */
 export function withKeep(instructions?: string): string {
@@ -75,7 +84,8 @@ export function isCheckpointWrite(tool: string, args: { file_path?: unknown; com
     return typeof args.file_path === 'string' && CHECKPOINTS.test(args.file_path)
   }
   if (tool === 'Bash') {
-    return typeof args.command === 'string' && CHECKPOINTS.test(args.command) && SHELL_WRITE.test(args.command)
+    const command = args.command
+    return typeof command === 'string' && CHECKPOINTS.test(command) && SHELL_WRITES.some(write => write.test(command))
   }
   return false
 }
@@ -96,17 +106,13 @@ export const register: Register = on => {
   // cannot carry the session past a tier, or past a compaction, unheard.
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
-    if (ran.deny !== undefined) {
+    // A refused call, and a subagent's loop, are not this session's context.
+    if (ran.deny !== undefined || e.agentId) {
       return ran
     }
 
     if (!ran.isError && isCheckpointWrite(e.tool, e as { file_path?: unknown; command?: unknown })) {
       await $.state.set(awaiting, null)
-    }
-
-    // A subagent's loop is not this session's context.
-    if (e.agentId) {
-      return ran
     }
 
     const notes = await notesFor($, 'tool')
