@@ -41,9 +41,6 @@ FALLBACK_RATIO = 0.9
 # The compaction line is read again after this many checks.
 REREAD_AFTER = 20
 STACKED_AT = 2
-# A session first seen with at least this many user turns in its rollout (or
-# forked from another one) is an earlier conversation carried over, not a new one.
-CARRIED_TURNS = 2
 KEEP_SESSIONS = 50
 TAIL_BYTES = 2 * 1024 * 1024
 SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -90,18 +87,18 @@ def session_meta(transcript):
 def usage(event):
     """What the session's rollout says: the context the model is carrying and
     its window (None before the first request), and whether this is an earlier
-    conversation carried over (a fork, or one already under way)."""
+    conversation carried over (a fork). Codex keeps a session's id when it is
+    resumed, so only a fork comes under a new id with its history."""
     transcript = event.get("transcript_path")
     meta = session_meta(transcript)
     if meta is None or meta.get("id") != event.get("session_id"):
         return None
     tokens = window = None
-    added = turns = legacy = 0
+    added = 0
     with open(transcript, "rb") as handle:
         size = os.fstat(handle.fileno()).st_size
         handle.seek(max(0, size - TAIL_BYTES))
-        cut = handle.tell() > 0
-        if cut:
+        if handle.tell():
             handle.readline()
         for line in handle:
             try:
@@ -113,6 +110,10 @@ def usage(event):
                     # What came in since the last request; Codex counts it at
                     # about 4 bytes a token. Image data is left out.
                     added += len(IMAGE_DATA.sub(b"", line)) // 4
+                    continue
+                if kind == "compacted":
+                    # What was counted before a compaction no longer holds: wait for the next count.
+                    tokens, added = None, 0
                     continue
                 if kind == "token_usage_record":
                     # Written as each request ends, before its tools run and
@@ -126,16 +127,12 @@ def usage(event):
                 else:
                     if kind == "event_msg" and what == "task_started" and isinstance(data.get("model_context_window"), int):
                         window = data["model_context_window"]
-                    elif kind == "event_msg" and what == "user_message":
-                        legacy += 1
-                    elif kind == "event_msg" and what == "item_completed" and (data.get("item") or {}).get("type") == "UserMessage":
-                        turns += 1
                     continue
                 if isinstance(value, int) and value >= 0 and value != tokens:
                     tokens, added = value, 0
             except (ValueError, AttributeError):
                 continue
-    carried = bool(meta.get("history_base") or meta.get("forked_from_id")) or cut or max(turns, legacy) >= CARRIED_TURNS
+    carried = bool(meta.get("history_base") or meta.get("forked_from_id"))
     if not (isinstance(window, int) and window > 0):
         tokens = None
     return {"tokens": None if tokens is None else tokens + added, "window": window, "carried": carried}
@@ -192,11 +189,14 @@ def compaction_line(state, session, window):
     return value, source
 
 
-def checkpoint_written_since(cwd, since):
-    folder = Path(cwd) / ".handoff" / "checkpoints" if isinstance(cwd, str) and cwd else None
-    if folder is None or not folder.is_dir():
+def checkpoint_written_since(cwd, sid, since):
+    """Whether this session's own checkpoint was written since then."""
+    if not isinstance(cwd, str) or not cwd:
         return False
-    return any(path.stat().st_mtime >= since for path in folder.glob("*.md"))
+    try:
+        return (Path(cwd) / ".handoff" / "checkpoints" / ("%s.md" % sid)).stat().st_mtime >= since
+    except OSError:
+        return False
 
 
 # --- state, one file per session ---------------------------------------
@@ -301,8 +301,8 @@ def compact_note(compacted, sid):
 
 def nudge_note(tokens, sid):
     return ("[handoff-guard] 上下文约 %s token 时那次「压缩前最后一个保存点」提醒之后，一整轮过去了，"
-            "任务目录下的 .handoff/checkpoints/ 里没有新写入的文件。会话有长期价值就现在先保存或刷新 checkpoint 并回读确认；"
-            "判断确实不需要就忽略这条，回复里也不用提它。" % wan(tokens) + where(sid) + "这条只提醒一次。")
+            "任务目录下本会话的 .handoff/checkpoints/%s.md 没有新写入的文件。会话有长期价值就现在先保存或刷新 checkpoint 并回读确认；"
+            "判断确实不需要就忽略这条，回复里也不用提它。" % (wan(tokens), sid) + where(sid) + "这条只提醒一次。")
 
 
 # --- the events ----------------------------------------------------------
@@ -312,7 +312,7 @@ def notes_for(state, event, via, seen):
     notes = []
     wait = state.get("awaiting")
     if via == "prompt" and wait:
-        if not checkpoint_written_since(event.get("cwd"), wait["at"]):
+        if not checkpoint_written_since(event.get("cwd"), sid, wait["at"]):
             notes.append(nudge_note(wait["tokens"], sid))
         state["awaiting"] = None
     if state.get("pending"):
@@ -321,7 +321,7 @@ def notes_for(state, event, via, seen):
 
     if seen and seen["tokens"] is not None:
         tokens, window = seen["tokens"], seen["window"]
-        # Only the first reading of a carried-over conversation stays quiet.
+        # Only the first reading of a fork stays quiet.
         carried = state.pop("carried", False)
         line, source = compaction_line(state, sid, window)
         reached = [name for name, at in TIERS if tokens >= at(line)]
@@ -329,8 +329,9 @@ def notes_for(state, event, via, seen):
             state["fired"] = []
         elif reached[-1] not in state["fired"]:
             state["fired"] = sorted(set(state["fired"]) | set(reached), key=[name for name, _ in TIERS].index)
-            if not carried:
-                # (A carried-over conversation was told under its earlier id.)
+            # A fork was told what it reached under its earlier id; the last
+            # saving point before a compaction speaks all the same.
+            if not carried or reached[-1] == "reevaluate":
                 if reached[-1] == "reevaluate":
                     state["awaiting"] = {"tokens": tokens, "at": time.time()}
                 notes.append(tier_note(reached[-1], tokens, line, source, state["compactions"], sid))

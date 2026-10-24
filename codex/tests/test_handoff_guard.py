@@ -109,16 +109,11 @@ class Tiers(World):
         self.use(510_000)
         self.assertIn("已经超过自动压缩线", self.notes()[0])
 
-    def test_a_conversation_carried_over_under_a_new_id_stays_quiet_for_what_it_reached(self):
+    def test_a_long_conversation_met_for_the_first_time_still_hears_its_tier(self):
+        # Codex keeps the id when a session is resumed: a new id with many turns is not a repeat.
         self.line(500_000)
         self.use(360_000, turns=6)
-        self.assertEqual(self.notes(), [])
-        self.assertEqual(self.notes("PostToolUse"), [])
-        self.use(405_000, turns=7)
-        self.assertIn("是否需要交接", self.notes()[0])
-
-    def test_turns_counted_the_older_way_also_mark_a_carried_conversation(self):
-        self.line(500_000)
+        self.assertIn("只做 checkpoint", self.notes()[0])
         self.use(360_000, turns=6, legacy=True)
         self.assertEqual(self.notes(), [])
 
@@ -131,6 +126,11 @@ class Tiers(World):
         self.assertEqual(self.notes("PostToolUse"), [])
         self.use(405_000, turns=1, meta=fork)
         self.assertIn("是否需要交接", self.notes()[0])
+
+    def test_a_fork_past_the_last_saving_point_hears_it_all_the_same(self):
+        self.line(500_000)
+        self.use(455_000, turns=1, meta={"history_base": {"thread_id": "parent"}})
+        self.assertIn("最后一个保存点", self.notes()[0])
 
     def test_a_new_conversation_whose_first_check_has_no_usage_hears_its_tier_later(self):
         self.line(500_000)
@@ -221,6 +221,19 @@ class Compactions(World):
         self.use(355_000)
         self.assertIn("只做 checkpoint", self.notes()[0])
 
+    def test_a_count_from_before_the_compaction_is_not_used_after_it(self):
+        self.line(500_000)
+        self.use(300_000)
+        self.notes()
+        compacted = {"type": "compacted", "payload": {"message": "summary"}}
+        self.use(470_000, after=[compacted])
+        self.fire("PostCompact", trigger="auto")
+        told = self.notes()
+        self.assertEqual(len(told), 1)
+        self.assertIn("第 1 次压缩", told[0])
+        self.use(470_000, after=[compacted, {"type": "token_usage_record", "payload": {"usage": {"total_tokens": 20_000}}}])
+        self.assertEqual(self.notes("PostToolUse"), [])
+
     def test_from_the_second_compaction_the_notes_mention_stacked_summaries(self):
         self.line(500_000)
         self.fire("PostCompact", trigger="auto")
@@ -252,6 +265,15 @@ class CheckpointWatch(World):
         folder.mkdir(parents=True)
         (folder / ("%s.md" % SID)).write_text("# checkpoint", encoding="utf-8")
         self.assertEqual(self.notes(), [])
+
+    def test_another_sessions_checkpoint_does_not_count(self):
+        self.line(500_000)
+        self.use(455_000)
+        self.notes()
+        folder = self.cwd / ".handoff" / "checkpoints"
+        folder.mkdir(parents=True)
+        (folder / "another-session.md").write_text("# checkpoint", encoding="utf-8")
+        self.assertIn("没有新写入的文件", self.notes()[0])
 
     def test_a_checkpoint_older_than_the_reminder_does_not_count(self):
         folder = self.cwd / ".handoff" / "checkpoints"

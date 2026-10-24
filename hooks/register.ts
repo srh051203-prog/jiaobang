@@ -257,8 +257,9 @@ async function notesFor($: EngineInterface, via: 'prompt' | 'tool'): Promise<str
     } else if (!done.includes(top.id)) {
       // A conversation carried over under a new session id (the desktop app
       // gives a reopened conversation one; a fork gets one too) already heard
-      // what it reached under the old id: record it and stay quiet.
-      const isCarried = isUnseen && (await turnsSoFar($)) >= CARRIED_TURNS
+      // what it reached under the old id: record it and stay quiet. The last
+      // saving point before a compaction speaks all the same.
+      const isCarried = isUnseen && top.id !== 'reevaluate' && (await turnsSoFar($)) >= CARRIED_TURNS
       const now = [...new Set([...done, ...reached.map(tier => tier.id)])]
       await $.state.set(fired, now)
       await persist($, sid, now, count)

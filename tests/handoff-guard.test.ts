@@ -442,6 +442,11 @@ describe('handoff-guard sessions', () => {
     expect((await notes($))[0]).toContain('是否需要交接')
   })
 
+  test('a conversation carried over past the last saving point still hears it', async ($, on) => {
+    world(on, { tokens: 455_000, window: 533_000, compactAt: 500_000, sid: 'reopened', turns: 12 })
+    expect((await notes($))[0]).toContain('最后一个保存点')
+  })
+
   test('a new conversation that starts big still hears its tier', async ($, on) => {
     world(on, { tokens: 360_000, window: 533_000, compactAt: 500_000, sid: 'fresh', turns: 1 })
     expect((await notes($))[0]).toContain('只做 checkpoint')
