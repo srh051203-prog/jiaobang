@@ -11,12 +11,25 @@
 
 ## 安装
 
-需要 Python 3.9 或更新（macOS 自带的就行），只用 Python 自带的库。在 macOS 上的 Codex CLI 0.163.0 测过：真的 `codex exec` 会调用这四个 hook，提醒会送到模型；它读的会话记录和日志格式不是 Codex 的公开接口，以后的版本可能会变。Windows 还没测过。
+需要 Python 3.9 或更新，只用 Python 自带的库：macOS 自带的就行；Windows 从 [python.org](https://www.python.org/downloads/) 或 Microsoft Store 装一个。
+
+macOS / Linux，在终端里：
 
 ```bash
 git clone https://github.com/srh051203-prog/jiaobang.git
 python3 jiaobang/codex/install.py
 ```
+
+Windows，在 PowerShell 或「命令提示符」里：
+
+```powershell
+git clone https://github.com/srh051203-prog/jiaobang.git
+py jiaobang\codex\install.py
+```
+
+提示找不到 `py` 就换成 `python`。没装 git 的话，在仓库页面点 **Code → Download ZIP**，解压后把命令里的 `jiaobang` 换成解压出来的文件夹名（一般是 `jiaobang-main`）。
+
+测过的情况：在 macOS 上的 Codex CLI 0.163.0 里，真的 `codex exec` 会调用这四个 hook，提醒会送到模型。Windows 上 Codex 用 PowerShell（或 cmd）运行 hook，安装脚本生成的是两种都能直接跑的命令，这条命令在 PowerShell 7 里实测过；还没在真的 Windows 电脑上跑过完整流程。脚本读的会话记录和日志格式不是 Codex 的公开接口，以后的版本可能会变。
 
 安装脚本会：
 
@@ -26,7 +39,7 @@ python3 jiaobang/codex/install.py
 
 重新打开 Codex 后生效；如果 Codex 询问是否信任新的 hooks，选信任。再跑一次就是更新，不会重复添加。如果 `hooks.json` 里已经有别的交接类 hook，安装脚本会列出来提醒你：两套同时开会重复提醒。
 
-卸载：
+卸载（Windows 上同样把 `python3` 换成 `py`）：
 
 ```bash
 python3 jiaobang/codex/install.py --uninstall

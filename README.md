@@ -42,11 +42,20 @@ Claude 桌面 App 里 `/plugin` 用不了：点输入框旁边的 **+** → **Pl
 
 ### Codex
 
-需要 Python 3.9 或更新（在 macOS 上的 Codex CLI 0.163.0 测过，Windows 还没测过）。在 shell 里：
+需要 Python 3.9 或更新（在 macOS 上的 Codex CLI 0.163.0 测过；Windows 上的命令在 PowerShell 里实测过，还没在真的 Windows 电脑上跑过完整流程）。
+
+macOS / Linux，在终端里：
 
 ```bash
 git clone https://github.com/srh051203-prog/jiaobang.git
 python3 jiaobang/codex/install.py
+```
+
+Windows，在 PowerShell 或「命令提示符」里（提示找不到 `py` 就换成 `python`）：
+
+```powershell
+git clone https://github.com/srh051203-prog/jiaobang.git
+py jiaobang\codex\install.py
 ```
 
 重新打开 Codex 后生效（问是否信任新的 hooks 时选信任）。安装脚本做了什么、怎么更新和卸载，看 [codex/README.md](codex/README.md)。

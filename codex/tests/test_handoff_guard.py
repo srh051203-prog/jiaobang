@@ -266,6 +266,15 @@ class CheckpointWatch(World):
 
 
 class Main(unittest.TestCase):
+    def test_the_output_is_ascii_json(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(hg, "handle", return_value={"hookSpecificOutput": {"additionalContext": "提醒"}}), \
+                mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"{}"))), mock.patch.object(sys, "stdout", out):
+            hg.main(["--state-dir", tmp])
+        self.assertTrue(out.getvalue().isascii())
+        self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["additionalContext"], "提醒")
+
     def test_a_failing_stdout_still_exits_zero(self):
         class Broken(io.StringIO):
             def write(self, text):
@@ -336,6 +345,27 @@ class Installer(unittest.TestCase):
             self.assertIn(lookalike["command"], commands)
             self.assertNotIn(windows["command"], commands)
             self.assertEqual(len(list(Path(tmp).glob("hooks.json.bak-jiaobang-*"))), 2)
+
+    def test_the_command_runs_as_written_in_sh_powershell_and_cmd(self):
+        script = r"C:\Users\Ann Lee\.codex\jiaobang\handoff_guard.py"
+        self.assertEqual(installer.hook_command("/x y/handoff_guard.py", "/usr/bin/python3", windows=False),
+                         '"/usr/bin/python3" -X utf8 "/x y/handoff_guard.py"')
+        # PowerShell reads a quoted first word as a string, so the interpreter goes first, bare.
+        plain = r"C:\Users\ann\AppData\Local\Programs\Python\Python312\python.exe"
+        self.assertEqual(installer.hook_command(script, plain, windows=True), '%s -X utf8 "%s"' % (plain, script))
+        spaced = r"C:\Program Files\Python312\python.exe"
+        with mock.patch.object(installer, "short_path", return_value=r"C:\PROGRA~1\PYTHON~1\python.exe"):
+            self.assertTrue(installer.hook_command(script, spaced, windows=True).startswith(r"C:\PROGRA~1\PYTHON~1\python.exe -X utf8 "))
+        with mock.patch.object(installer, "short_path", side_effect=lambda path: path), \
+                mock.patch.object(installer.shutil, "which", side_effect=lambda name: name == "py" and r"C:\py.exe"):
+            self.assertTrue(installer.hook_command(script, spaced, windows=True).startswith("py -X utf8 "))
+        with mock.patch.object(installer, "short_path", side_effect=lambda path: path), \
+                mock.patch.object(installer.shutil, "which", return_value=None):
+            self.assertTrue(installer.hook_command(script, spaced, windows=True).startswith("python -X utf8 "))
+        with mock.patch.object(installer, "short_path", return_value=r"C:\Users\ANNLEE~1\x.py") as short:
+            self.assertTrue(installer.hook_command(r"C:\Users\a$b\x.py", plain, windows=True).endswith(r'"C:\Users\ANNLEE~1\x.py"'))
+            short.assert_called_once()
+        self.assertTrue(installer.ours({"command": installer.hook_command(script, plain, windows=True)}))
 
     def test_a_broken_hooks_file_is_left_untouched(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"CODEX_HOME": tmp}), \

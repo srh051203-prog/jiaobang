@@ -7,6 +7,7 @@ backed up first. Running it again replaces only its own entries.
 
     python3 install.py            # install or update
     python3 install.py --uninstall
+    py install.py                 # on Windows
 """
 import argparse
 import json
@@ -28,8 +29,41 @@ EVENTS = {
 OURS = re.compile(r"[\\/]jiaobang[\\/]handoff_guard\.py\b")
 
 
+# What PowerShell and cmd both take as a bare word, and inside double quotes.
+BARE = re.compile(r"^[\w.:\\/~-]+$")
+QUOTABLE = re.compile(r'^[^$`%"]+$')
+
+
 def ours(hook):
     return bool(OURS.search(str(hook.get("command", ""))))
+
+
+def short_path(path):
+    """The 8.3 form of a Windows path (no spaces), or the path as it was."""
+    try:
+        import ctypes
+        get = ctypes.windll.kernel32.GetShortPathNameW
+        size = get(path, None, 0)
+        buffer = ctypes.create_unicode_buffer(size)
+        return buffer.value if size and get(path, buffer, size) else path
+    except (AttributeError, ImportError, OSError):
+        return path
+
+
+def hook_command(script, python=sys.executable, windows=os.name == "nt"):
+    """The hook's command line. Codex hands it to the user's shell: sh, zsh or
+    bash on macOS and Linux; PowerShell, or cmd /C, on Windows. PowerShell runs
+    a program only when it is named by a bare word (a quoted first word is just
+    a string), so on Windows the interpreter goes first, unquoted."""
+    script = str(script)
+    if not windows:
+        return '"%s" -X utf8 "%s"' % (python, script)
+    program = python if BARE.match(python) else short_path(python)
+    if not BARE.match(program):
+        program = "py" if shutil.which("py") else "python"
+    if not QUOTABLE.match(script):
+        script = short_path(script)
+    return '%s -X utf8 "%s"' % (program, script)
 
 
 def without_ours(hooks):
@@ -95,7 +129,7 @@ def main(argv=None):
         shutil.copy2(HERE / "handoff_guard.py", script)
         skill.mkdir(parents=True, exist_ok=True)
         shutil.copy2(HERE / "skills" / "jiaobang-handoff" / "SKILL.md", skill / "SKILL.md")
-        command = '"%s" -X utf8 "%s"' % (sys.executable, script)
+        command = hook_command(script)
         for event, matcher in EVENTS.items():
             group = {"hooks": [{"type": "command", "command": command, "timeout": 5}]}
             if event in ("UserPromptSubmit", "PostToolUse"):

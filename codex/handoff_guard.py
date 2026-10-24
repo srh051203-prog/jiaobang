@@ -19,8 +19,12 @@ import time
 
 try:
     import fcntl
-except ImportError:  # Windows: state writes go unlocked.
+except ImportError:  # Windows
     fcntl = None
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
 DEFAULT_STATE_DIR = CODEX_HOME / "state" / "jiaobang"
@@ -206,10 +210,13 @@ class State:
 
     def __enter__(self):
         self.folder.mkdir(parents=True, exist_ok=True)
+        # One lock for the folder, so pruning other sessions' files is safe.
+        self.lock = open(str(self.folder / ".lock"), "a+")
         if fcntl:
-            # One lock for the folder, so pruning other sessions' files is safe.
-            self.lock = open(str(self.folder / ".lock"), "w")
             fcntl.flock(self.lock, fcntl.LOCK_EX)
+        elif msvcrt:
+            self.lock.seek(0)
+            msvcrt.locking(self.lock.fileno(), msvcrt.LK_LOCK, 1)  # gives up after about 10 s
         unseen = not self.path.exists()
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
@@ -231,8 +238,13 @@ class State:
             temporary.write_text(json.dumps(self.data, ensure_ascii=False), encoding="utf-8")
             os.replace(temporary, self.path)
             prune(self.folder)
-        if self.lock:
-            self.lock.close()
+        if msvcrt and not fcntl:
+            try:
+                self.lock.seek(0)
+                msvcrt.locking(self.lock.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        self.lock.close()
         return False
 
 
@@ -361,7 +373,8 @@ def main(argv=None):
         event = json.loads(sys.stdin.buffer.read().decode("utf-8") or "{}")
         result = handle(event, args.state_dir)
         if result:
-            sys.stdout.write(json.dumps(result, ensure_ascii=False))
+            # ASCII only, so no console code page on the way (PowerShell, cmd) can garble it.
+            sys.stdout.write(json.dumps(result))
     except Exception as error:  # Never stand in Codex's way.
         print("handoff-guard: %s" % error, file=sys.stderr)
     return 0
