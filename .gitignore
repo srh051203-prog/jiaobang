@@ -2,3 +2,5 @@
 .claude-plugin/types/
 .handoff/
 *.log
+__pycache__/
+*.pyc

@@ -16,6 +16,8 @@
 
 插件只负责提醒，不会自己写交接、开会话，也不会拦截任何操作；出错就直接放行。
 
+> **用 Codex？** 看 [codex/README.md](codex/README.md)：同一套规则、同一种交接文件，在 Claude Code 写的交接到 Codex 里也能接着做。
+
 ## 安装
 
 需要 **Claude Code 2.1.303 或更新**的版本（在 2.1.303 命令行和 2.1.308 桌面版上测过；插件接口还在早期测试阶段，以后的版本可能会变）。
@@ -70,7 +72,7 @@ Claude 桌面 App 里 `/plugin` 用不了：点输入框旁边的 **+** → **Pl
 
 ## 限制
 
-- **只支持 Claude Code**。Codex、DeepSeek Harness 等工具的 hook 接口不同，不能直接用这个插件。
+- 这个插件只能装在 Claude Code 里；Codex 用 [codex/](codex/) 里的版本。DeepSeek Harness 等其他工具暂不支持。
 - **自动开新会话只在 Claude 桌面 App 里可用**；终端里会给出一段可复制的恢复开场白。
 - 公司统一管理 Claude Code 的电脑上，压缩相关的 hook（压缩计数、摘要保留清单）不会运行，档位提醒照常。
 
@@ -83,7 +85,7 @@ claude plugin test .
 
 ## English
 
-**jiaobang** ("passing the baton") is a Claude Code plugin, `handoff-guard`, with a `handoff` skill. It reads Claude Code's real context usage and auto-compaction line, reminds the model at 70% / 80% / 90% of that line to save a checkpoint or weigh a handoff, also checks after the model's own tool calls, keeps what a handoff needs through compaction, and remembers per session which reminders it already gave. Saying "交接" (handoff) saves a handoff under `.handoff/` and, in the Claude desktop app, opens a new session to continue. The reminders and the skill are written in Chinese. Requires Claude Code 2.1.303 or later.
+**jiaobang** ("passing the baton") is a Claude Code plugin, `handoff-guard`, with a `handoff` skill. It reads Claude Code's real context usage and auto-compaction line, reminds the model at 70% / 80% / 90% of that line to save a checkpoint or weigh a handoff, also checks after the model's own tool calls, keeps what a handoff needs through compaction, and remembers per session which reminders it already gave. Saying "交接" (handoff) saves a handoff under `.handoff/` and, in the Claude desktop app, opens a new session to continue. The reminders and the skill are written in Chinese. Requires Claude Code 2.1.303 or later. A Codex version with the same rules and handoff files lives in [codex/](codex/).
 
 ## 许可证
 
