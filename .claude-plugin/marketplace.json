@@ -1,0 +1,15 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "jiaobang",
+  "description": "交棒：Claude Code 跨会话交接工具",
+  "owner": { "name": "srh051203-prog" },
+  "plugins": [
+    {
+      "name": "handoff-guard",
+      "description": "按真实上下文用量和压缩事件提醒保存 checkpoint、评估交接，并带 /handoff 交接技能",
+      "author": { "name": "srh051203-prog" },
+      "category": "productivity",
+      "source": "./"
+    }
+  ]
+}
